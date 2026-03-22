@@ -45,9 +45,10 @@ jobs:
 
       - name: Clone source
         run: |
-          git clone --depth=1 $REPO_URL -b $REPO_BRANCH openwrt
+          git clone $REPO_URL -b $REPO_BRANCH openwrt
           cd openwrt
-          echo "Source commit:"
+          git checkout 581050ce4e
+          echo "Pinned to kernel 6.6.119 commit:"
           git log --oneline -1
           echo "Kernel version:"
           cat include/kernel-6.6
