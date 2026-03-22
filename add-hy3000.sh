@@ -1,0 +1,87 @@
+#!/bin/bash
+# add-hy3000.sh - Add HY3000 device support to ImmortalWrt
+set -e
+
+WORKDIR="$1"
+PATCHDIR="$2"
+cd "$WORKDIR"
+
+# Copy DTS
+cp -f "$PATCHDIR/mt7981b-philips-hy3000.dts" target/linux/mediatek/dts/
+echo "DTS copied."
+
+# Try applying the patch file
+if git apply --check "$PATCHDIR/001-add-hy3000-profile.patch" 2>/dev/null; then
+    git apply "$PATCHDIR/001-add-hy3000-profile.patch"
+    echo "Patch applied cleanly."
+else
+    echo "Patch doesn't apply, doing manual integration..."
+
+    # 02_network
+    if ! grep -q "philips,hy3000" target/linux/mediatek/filogic/base-files/etc/board.d/02_network; then
+        sed -i '/qihoo,360t7|\\$/a\\tphilips,hy3000|\\' \
+            target/linux/mediatek/filogic/base-files/etc/board.d/02_network
+        echo "02_network patched."
+    fi
+
+    # platform.sh - all three functions
+    if ! grep -q "philips,hy3000" target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh; then
+        sed -i '/cmcc,rax3000m|\\$/a\\tphilips,hy3000|\\' \
+            target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
+        echo "platform.sh patched."
+    fi
+
+    # uboot-envtools
+    if ! grep -q "philips,hy3000" package/boot/uboot-tools/uboot-envtools/files/mediatek_filogic 2>/dev/null; then
+        sed -i '/cmcc,rax3000m)$/a\philips,hy3000)' \
+            package/boot/uboot-tools/uboot-envtools/files/mediatek_filogic 2>/dev/null || true
+        echo "uboot-envtools patched."
+    fi
+
+    # filogic.mk - add device definition
+    if ! grep -q "philips_hy3000" target/linux/mediatek/image/filogic.mk; then
+        cat >> target/linux/mediatek/image/filogic.mk << 'DEVEOF'
+
+define Device/philips_hy3000
+  DEVICE_VENDOR := PHILIPS
+  DEVICE_MODEL := HY3000
+  DEVICE_DTS := mt7981b-philips-hy3000
+  DEVICE_DTS_DIR := ../dts
+  DEVICE_DTC_FLAGS := --pad 4096
+  DEVICE_DTS_LOADADDR := 0x43f00000
+  DEVICE_PACKAGES := kmod-mt7915e kmod-mt7981-firmware mt7981-wo-firmware f2fsck mkf2fs
+  KERNEL_LOADADDR := 0x44000000
+  KERNEL := kernel-bin | gzip
+  KERNEL_INITRAMFS := kernel-bin | lzma | \
+	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 64k
+  KERNEL_INITRAMFS_SUFFIX := -recovery.itb
+  IMAGES := sysupgrade.itb
+  IMAGE_SIZE := $$(shell expr 64 + $$(CONFIG_TARGET_ROOTFS_PARTSIZE))m
+  IMAGE/sysupgrade.itb := append-kernel | \
+	 fit gzip $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb external-static-with-rootfs | \
+	 pad-rootfs | append-metadata
+  ARTIFACTS := gpt.bin bl31-uboot.fip preloader.bin
+  ARTIFACT/gpt.bin := mt798x-gpt emmc
+  ARTIFACT/bl31-uboot.fip := mt7981-bl31-uboot philips_hy3000
+  ARTIFACT/preloader.bin  := mt7981-bl2 emmc-ddr4
+endef
+TARGET_DEVICES += philips_hy3000
+DEVEOF
+        echo "filogic.mk patched."
+    fi
+fi
+
+# Enable VETH
+sed -i 's/# CONFIG_VETH is not set/CONFIG_VETH=m/' target/linux/generic/config-6.6
+
+# Add iStore feed
+if ! grep -q istore feeds.conf.default; then
+    echo 'src-git istore https://github.com/istoreos/istore.git' >> feeds.conf.default
+fi
+
+echo "=== Verification ==="
+grep -c "philips" target/linux/mediatek/image/filogic.mk
+ls target/linux/mediatek/dts/mt7981b-philips-hy3000.dts
+grep VETH target/linux/generic/config-6.6
+grep istore feeds.conf.default
+echo "=== All done ==="
