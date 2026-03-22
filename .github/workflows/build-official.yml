@@ -1,6 +1,10 @@
 name: Build ImmortalWrt official + HY3000 + BTF + dae + iStore
 
 on:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/build-official.yml'
   workflow_dispatch:
 
 env:
