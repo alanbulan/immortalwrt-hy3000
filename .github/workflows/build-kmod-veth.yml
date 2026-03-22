@@ -1,0 +1,112 @@
+name: Build kmod-veth only
+
+on:
+  workflow_dispatch:
+
+env:
+  REPO_URL: https://github.com/padavanonly/immortalwrt-mt798x-6.6
+  REPO_BRANCH: openwrt-24.10-6.6
+  TZ: Asia/Shanghai
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Install dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo -E apt-get -qq update
+          sudo -E apt-get -qq install ack antlr3 asciidoc autoconf automake autopoint \
+            binutils bison build-essential bzip2 ccache clang cmake cpio curl \
+            device-tree-compiler fastjar flex gawk gettext gcc-multilib g++-multilib \
+            git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev \
+            libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev \
+            libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev \
+            libtool llvm lrzsz mkisofs msmtp ninja-build p7zip p7zip-full patch \
+            pkgconf python3 python3-pyelftools python3-setuptools qemu-utils rsync \
+            scons squashfs-tools subversion swig texinfo uglifyjs unzip vim wget \
+            xmlto xxd zlib1g-dev
+          sudo -E apt-get -qq autoremove --purge
+          sudo -E apt-get -qq clean
+          sudo timedatectl set-timezone "$TZ"
+
+      - name: Clone source (same as your build)
+        run: |
+          git clone --depth=1 $REPO_URL -b $REPO_BRANCH openwrt
+
+      - name: Enable CONFIG_VETH=m
+        run: |
+          cd openwrt
+          # Enable VETH in generic kernel config
+          sed -i 's/# CONFIG_VETH is not set/CONFIG_VETH=m/' target/linux/generic/config-6.6
+          echo "VETH config:"
+          grep VETH target/linux/generic/config-6.6
+
+      - name: Configure for Philips HY3000
+        run: |
+          cd openwrt
+          # Minimal .config - same target as your build
+          cat > .config << 'EOF'
+          CONFIG_TARGET_mediatek=y
+          CONFIG_TARGET_mediatek_filogic=y
+          CONFIG_TARGET_mediatek_filogic_DEVICE_philips_hy3000=y
+          CONFIG_PACKAGE_kmod-veth=y
+          EOF
+          make defconfig
+
+      - name: Update & install feeds
+        run: |
+          cd openwrt
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Download sources
+        run: |
+          cd openwrt
+          make download -j$(nproc)
+          find dl -size -1024c -exec rm -f {} \;
+
+      - name: Build toolchain + kernel + kmod-veth
+        run: |
+          cd openwrt
+          echo "Building toolchain..."
+          make tools/install -j$(nproc) || make tools/install -j1 V=s
+          make toolchain/install -j$(nproc) || make toolchain/install -j1 V=s
+          echo "Building kernel..."
+          make target/linux/compile -j$(nproc) || make target/linux/compile -j1 V=s
+          echo "Building kmod-veth..."
+          make package/kernel/linux/compile -j$(nproc) || make package/kernel/linux/compile -j1 V=s
+          echo "=== Looking for veth.ko ==="
+          find build_dir -name "veth.ko" 2>/dev/null
+          find bin -name "*veth*" 2>/dev/null
+          echo "=== Kernel version ==="
+          cat build_dir/target-*/linux-mediatek_filogic/linux-6.6*/include/config/kernel.release 2>/dev/null
+
+      - name: Collect kmod-veth output
+        run: |
+          cd openwrt
+          mkdir -p /tmp/kmod-output
+          find build_dir -name "veth.ko" -exec cp {} /tmp/kmod-output/ \;
+          find bin -name "*veth*" -exec cp {} /tmp/kmod-output/ \;
+          # Also grab the kernel hash for verification
+          cat build_dir/target-*/linux-mediatek_filogic/linux-6.6*/.vermagic 2>/dev/null > /tmp/kmod-output/vermagic.txt || true
+          ls -lh /tmp/kmod-output/
+
+      - name: Upload kmod-veth
+        uses: actions/upload-artifact@v4
+        with:
+          name: kmod-veth-hy3000
+          path: /tmp/kmod-output/
