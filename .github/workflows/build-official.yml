@@ -57,9 +57,15 @@ jobs:
       - name: Update and install feeds
         run: |
           cd openwrt
-          ./scripts/feeds update -a
+          # Fix git auth for CI
+          git config --global url."https://github.com/".insteadOf "git://github.com/"
+          ./scripts/feeds update -a || {
+            echo "iStore feed failed, removing and retrying..."
+            sed -i '/istore/d' feeds.conf.default
+            ./scripts/feeds update -a
+          }
           ./scripts/feeds install -a
-          ./scripts/feeds install luci-app-store || true
+          ./scripts/feeds install luci-app-store 2>/dev/null || true
 
       - name: Add daed package
         run: |

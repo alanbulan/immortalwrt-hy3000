@@ -74,9 +74,9 @@ fi
 # Enable VETH
 sed -i 's/# CONFIG_VETH is not set/CONFIG_VETH=m/' target/linux/generic/config-6.6
 
-# Add iStore feed
+# Add iStore feed (use https with .git suffix for CI compatibility)
 if ! grep -q istore feeds.conf.default; then
-    echo 'src-git istore https://github.com/istoreos/istore.git' >> feeds.conf.default
+    echo 'src-git istore https://github.com/istoreos/istore.git;main' >> feeds.conf.default
 fi
 
 echo "=== Verification ==="
