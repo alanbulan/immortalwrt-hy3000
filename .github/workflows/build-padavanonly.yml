@@ -148,7 +148,13 @@ jobs:
         run: |
           cd openwrt
           echo "Compiling with $(nproc) threads..."
-          make -j$(nproc) 2>&1 | tail -30 || make -j1 V=s 2>&1 | tail -100
+          make -j$(nproc) || {
+            echo "=== Parallel build failed, retrying with V=s ==="
+            make -j1 V=s 2>&1 | tee /tmp/build-error.log | tail -200
+            echo "=== Last 50 error lines ==="
+            grep -iE "error|fatal|cannot|undefined|undeclared" /tmp/build-error.log | tail -50
+            exit 1
+          }
           echo "status=success" >> $GITHUB_OUTPUT
           echo "=== Output files ==="
           ls -lh bin/targets/mediatek/filogic/ || true
