@@ -1,0 +1,268 @@
+name: Build ImmortalWrt official + HY3000 + BTF + dae + iStore
+
+on:
+  workflow_dispatch:
+
+env:
+  REPO_URL: https://github.com/immortalwrt/immortalwrt
+  REPO_BRANCH: openwrt-24.10
+  COMMIT_SHA: 581050ce4e
+  TZ: Asia/Shanghai
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo -E apt-get -qq update
+          sudo -E apt-get -qq install ack antlr3 asciidoc autoconf automake autopoint \
+            binutils bison build-essential bzip2 ccache clang cmake cpio curl \
+            device-tree-compiler fastjar flex gawk gettext gcc-multilib g++-multilib \
+            git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev \
+            libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev \
+            libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev \
+            libtool llvm lrzsz mkisofs msmtp ninja-build p7zip p7zip-full patch \
+            pkgconf python3 python3-pyelftools python3-setuptools qemu-utils rsync \
+            scons squashfs-tools subversion swig texinfo uglifyjs unzip vim wget \
+            xmlto xxd zlib1g-dev npm
+          npm install -g pnpm || true
+          sudo -E apt-get -qq autoremove --purge
+          sudo -E apt-get -qq clean
+          sudo timedatectl set-timezone "$TZ"
+
+      - name: Clone ImmortalWrt official (pinned to kernel 6.6.119)
+        run: |
+          git clone $REPO_URL -b $REPO_BRANCH openwrt
+          cd openwrt
+          git checkout $COMMIT_SHA
+          echo "Commit: $(git log --oneline -1)"
+          echo "Kernel: $(cat include/kernel-6.6)"
+
+      - name: Add HY3000 device support
+        run: |
+          cd openwrt
+          # Copy DTS
+          cp $GITHUB_WORKSPACE/patches/mt7981b-philips-hy3000.dts target/linux/mediatek/dts/
+          # Apply profile patch with fallback to manual
+          git apply $GITHUB_WORKSPACE/patches/001-add-hy3000-profile.patch 2>/dev/null || {
+            echo "Patch doesn't apply cleanly, doing manual integration..."
+            # filogic.mk
+            if ! grep -q "philips_hy3000" target/linux/mediatek/image/filogic.mk; then
+              sed -i '/^TARGET_DEVICES += cmcc_rax3000m$/r /dev/stdin' target/linux/mediatek/image/filogic.mk << 'MKEOF'
+
+define Device/philips_hy3000
+  DEVICE_VENDOR := PHILIPS
+  DEVICE_MODEL := HY3000
+  DEVICE_DTS := mt7981b-philips-hy3000
+  DEVICE_DTS_DIR := ../dts
+  DEVICE_DTC_FLAGS := --pad 4096
+  DEVICE_DTS_LOADADDR := 0x43f00000
+  DEVICE_PACKAGES := kmod-mt7915e kmod-mt7981-firmware mt7981-wo-firmware f2fsck mkf2fs
+  KERNEL_LOADADDR := 0x44000000
+  KERNEL := kernel-bin | gzip
+  KERNEL_INITRAMFS := kernel-bin | lzma | \
+	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 64k
+  KERNEL_INITRAMFS_SUFFIX := -recovery.itb
+  IMAGES := sysupgrade.itb
+  IMAGE_SIZE := $$(shell expr 64 + $$(CONFIG_TARGET_ROOTFS_PARTSIZE))m
+  IMAGE/sysupgrade.itb := append-kernel | \
+	 fit gzip $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb external-static-with-rootfs | \
+	 pad-rootfs | append-metadata
+  ARTIFACTS := gpt.bin bl31-uboot.fip preloader.bin
+  ARTIFACT/gpt.bin := mt798x-gpt emmc
+  ARTIFACT/bl31-uboot.fip := mt7981-bl31-uboot philips_hy3000
+  ARTIFACT/preloader.bin  := mt7981-bl2 emmc-ddr4
+endef
+TARGET_DEVICES += philips_hy3000
+MKEOF
+            fi
+            # 02_network
+            if ! grep -q "philips,hy3000" target/linux/mediatek/filogic/base-files/etc/board.d/02_network; then
+              sed -i '/qihoo,360t7|\\$/a\\tphilips,hy3000|\\' \
+                target/linux/mediatek/filogic/base-files/etc/board.d/02_network
+            fi
+            # platform.sh - upgrade
+            if ! grep -q "philips,hy3000" target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh; then
+              sed -i '/cmcc,rax3000m|\\$/a\\tphilips,hy3000|\\' \
+                target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
+            fi
+            # uboot-envtools
+            if ! grep -q "philips,hy3000" package/boot/uboot-tools/uboot-envtools/files/mediatek_filogic; then
+              sed -i '/cmcc,rax3000m)$/a\philips,hy3000)' \
+                package/boot/uboot-tools/uboot-envtools/files/mediatek_filogic
+            fi
+          }
+          echo "=== HY3000 integration check ==="
+          grep -c "philips" target/linux/mediatek/image/filogic.mk
+          grep -c "philips" target/linux/mediatek/filogic/base-files/etc/board.d/02_network
+          ls target/linux/mediatek/dts/mt7981b-philips-hy3000.dts
+
+      - name: Add iStore feed
+        run: |
+          cd openwrt
+          echo 'src-git istore https://github.com/istoreos/istore.git' >> feeds.conf.default
+          cat feeds.conf.default
+
+      - name: Enable VETH in kernel config
+        run: |
+          cd openwrt
+          sed -i 's/# CONFIG_VETH is not set/CONFIG_VETH=m/' target/linux/generic/config-6.6
+
+      - name: Update & install feeds
+        run: |
+          cd openwrt
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          # Make sure iStore packages are available
+          ./scripts/feeds install luci-app-store 2>/dev/null || true
+
+      - name: Add daed packages
+        run: |
+          cd openwrt
+          git clone --depth=1 https://github.com/QiuSimons/luci-app-daed.git package/dae
+          ls package/dae/
+
+      - name: Generate .config
+        run: |
+          cd openwrt
+          cat > .config << 'EOF'
+          CONFIG_TARGET_mediatek=y
+          CONFIG_TARGET_mediatek_filogic=y
+          CONFIG_TARGET_mediatek_filogic_DEVICE_philips_hy3000=y
+
+          # BTF / eBPF
+          CONFIG_DEVEL=y
+          CONFIG_KERNEL_DEBUG_INFO=y
+          # CONFIG_KERNEL_DEBUG_INFO_REDUCED is not set
+          CONFIG_KERNEL_DEBUG_INFO_BTF=y
+          CONFIG_KERNEL_CGROUPS=y
+          CONFIG_KERNEL_CGROUP_BPF=y
+          CONFIG_KERNEL_BPF_EVENTS=y
+          CONFIG_BPF_TOOLCHAIN_HOST=y
+          CONFIG_KERNEL_XDP_SOCKETS=y
+          CONFIG_PACKAGE_kmod-xdp-sockets-diag=y
+          CONFIG_PACKAGE_kmod-veth=y
+
+          # dae
+          CONFIG_PACKAGE_daed=y
+          CONFIG_PACKAGE_luci-app-daed=y
+          CONFIG_PACKAGE_luci-i18n-daed-zh-cn=y
+
+          # iStore
+          CONFIG_PACKAGE_luci-app-store=y
+
+          # LuCI
+          CONFIG_PACKAGE_luci=y
+          CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+
+          # Packages
+          CONFIG_PACKAGE_htop=y
+          CONFIG_PACKAGE_curl=y
+          CONFIG_PACKAGE_wget-ssl=y
+          CONFIG_PACKAGE_openssh-sftp-server=y
+          CONFIG_PACKAGE_kmod-usb3=y
+          CONFIG_PACKAGE_kmod-usb-storage=y
+          CONFIG_PACKAGE_block-mount=y
+          CONFIG_PACKAGE_f2fsck=y
+          CONFIG_PACKAGE_mkf2fs=y
+
+          # WiFi
+          CONFIG_PACKAGE_kmod-mt7915e=y
+          CONFIG_PACKAGE_kmod-mt7981-firmware=y
+          CONFIG_PACKAGE_mt7981-wo-firmware=y
+          CONFIG_PACKAGE_wpad-openssl=y
+          # CONFIG_PACKAGE_wpad-basic-mbedtls is not set
+
+          # Filesystem
+          CONFIG_TARGET_ROOTFS_PARTSIZE=512
+          CONFIG_TARGET_ROOTFS_SQUASHFS=y
+          EOF
+          make defconfig
+          echo "=== Key config ==="
+          grep -E "BTF|dae|VETH|philips|store|ROOTFS" .config | head -20
+
+      - name: Download packages
+        run: |
+          cd openwrt
+          make download -j$(nproc)
+          find dl -size -1024c -exec rm -f {} \;
+
+      - name: Compile firmware
+        id: compile
+        run: |
+          cd openwrt
+          echo "Compiling with $(nproc) threads..."
+          make -j$(nproc) || {
+            echo "=== Parallel build failed, retrying with V=s ==="
+            make -j1 V=s 2>&1 | tee /tmp/build-error.log | tail -200
+            echo "=== Error lines ==="
+            grep -iE "error:|fatal" /tmp/build-error.log | tail -30
+            exit 1
+          }
+          echo "status=success" >> $GITHUB_OUTPUT
+          echo "=== Output files ==="
+          ls -lh bin/targets/mediatek/filogic/
+
+      - name: Organize output
+        if: steps.compile.outputs.status == 'success'
+        run: |
+          cd openwrt/bin/targets/mediatek/filogic/
+          rm -rf packages sha256sums *.buildinfo *.manifest
+          ls -lh
+
+      - name: Generate release tag
+        id: tag
+        run: |
+          echo "tag=hy3000-immortalwrt-$(date +"%Y%m%d-%H%M")" >> $GITHUB_OUTPUT
+          echo "date=$(date +"%Y-%m-%d %H:%M")" >> $GITHUB_OUTPUT
+
+      - name: Upload firmware to release
+        if: steps.compile.outputs.status == 'success'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: "HY3000 ImmortalWrt 24.10 + BTF/dae/iStore (${{ steps.tag.outputs.date }})"
+          body: |
+            ## Philips HY3000 - ImmortalWrt 24.10 official + BTF/dae + iStore
+
+            - ImmortalWrt 24.10 (kernel 6.6.119)
+            - BTF/eBPF enabled
+            - daed + luci-app-daed pre-installed
+            - iStore app store included
+            - WiFi MT7915E (2.4G + 5G)
+            - eMMC boot, 512MB rootfs
+
+            **Upgrade from iStoreOS:**
+            ```
+            sysupgrade -v /tmp/firmware.itb
+            ```
+          files: openwrt/bin/targets/mediatek/filogic/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload as artifact
+        if: steps.compile.outputs.status == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: hy3000-immortalwrt-firmware
+          path: openwrt/bin/targets/mediatek/filogic/
