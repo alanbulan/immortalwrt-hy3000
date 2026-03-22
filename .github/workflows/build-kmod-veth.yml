@@ -43,9 +43,13 @@ jobs:
           sudo -E apt-get -qq clean
           sudo timedatectl set-timezone "$TZ"
 
-      - name: Clone source (same as your build)
+      - name: Clone source (same commit as your build on Mar 13)
         run: |
-          git clone --depth=1 $REPO_URL -b $REPO_BRANCH openwrt
+          git clone $REPO_URL -b $REPO_BRANCH openwrt
+          cd openwrt
+          git checkout 4c657c9354
+          echo "Pinned to commit:"
+          git log --oneline -1
 
       - name: Enable CONFIG_VETH=m
         run: |
@@ -101,8 +105,14 @@ jobs:
           mkdir -p /tmp/kmod-output
           find build_dir -name "veth.ko" -exec cp {} /tmp/kmod-output/ \;
           find bin -name "*veth*" -exec cp {} /tmp/kmod-output/ \;
-          # Also grab the kernel hash for verification
+          # Grab vermagic for comparison with router's: "6.6.119 SMP mod_unload aarch64"
           cat build_dir/target-*/linux-mediatek_filogic/linux-6.6*/.vermagic 2>/dev/null > /tmp/kmod-output/vermagic.txt || true
+          echo "=== Built vermagic ==="
+          cat /tmp/kmod-output/vermagic.txt
+          echo "=== Router vermagic (must match) ==="
+          echo "6.6.119 SMP mod_unload aarch64"
+          # Also check the module's embedded vermagic
+          strings /tmp/kmod-output/veth.ko 2>/dev/null | grep vermagic || true
           ls -lh /tmp/kmod-output/
 
       - name: Upload kmod-veth
