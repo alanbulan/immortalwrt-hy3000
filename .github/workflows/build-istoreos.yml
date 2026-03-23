@@ -165,7 +165,7 @@ jobs:
             - BTF/eBPF enabled for dae
             - daed + luci-app-daed included
             - sysupgrade from current iStoreOS
-          files: bin/targets/mediatek/filogic/*
+          files: openwrt/bin/targets/mediatek/filogic/*
           draft: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -174,4 +174,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: istoreos-hy3000-btf-daed
-          path: bin/targets/mediatek/filogic/
+          path: openwrt/bin/targets/mediatek/filogic/
