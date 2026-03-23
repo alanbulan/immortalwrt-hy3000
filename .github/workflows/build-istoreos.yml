@@ -98,11 +98,6 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: Add daed package
-        run: |
-          cd openwrt
-          git clone --depth=1 https://github.com/QiuSimons/luci-app-daed.git package/dae
-
       - name: Write config
         run: |
           cd openwrt
@@ -122,9 +117,6 @@ jobs:
           CONFIG_KERNEL_XDP_SOCKETS=y
           CONFIG_PACKAGE_kmod-xdp-sockets-diag=y
           CONFIG_PACKAGE_kmod-veth=y
-          CONFIG_PACKAGE_daed=y
-          CONFIG_PACKAGE_luci-app-daed=y
-          CONFIG_PACKAGE_luci-i18n-daed-zh-cn=y
           CONFIG_PACKAGE_luci=y
           CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
           CONFIG_PACKAGE_htop=y
@@ -145,7 +137,7 @@ jobs:
           EOF
           make defconfig
           echo "=== Key config ==="
-          grep -E "BTF|dae|VETH|philips|ROOTFS" .config | head -20
+          grep -E "BTF|VETH|philips|ROOTFS" .config | head -20
 
       - name: Download
         run: cd openwrt && make download -j$(nproc) && find dl -size -1024c -exec rm -f {} \;
@@ -153,7 +145,11 @@ jobs:
       - name: Compile
         run: |
           cd openwrt
-          make -j$(nproc) || make -j1 V=s 2>&1 | tail -300
+          make -j$(nproc) || {
+            echo "=== Parallel failed, retrying V=s ==="
+            make -j1 V=s 2>&1 | tail -300
+            exit 1
+          }
           echo "=== Output ==="
           ls -lh bin/targets/mediatek/filogic/
           ls -lh bin/targets/mediatek/filogic/*hy3000* 2>/dev/null || echo "No HY3000 images found"
